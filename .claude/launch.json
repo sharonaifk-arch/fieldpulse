@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "facm",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "set FACM_DISABLE_TOKEN=1&& set FACM_PORT=4570&& node apps/server/dist/main.js"],
+      "port": 4570,
+      "autoPort": false
+    }
+  ]
+}

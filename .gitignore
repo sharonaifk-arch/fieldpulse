@@ -1,0 +1,28 @@
+# dependencies / builds
+node_modules/
+dist/
+*.tsbuildinfo
+
+# local runtime data (cache SQLite, exports générés)
+data/
+dist-portable/
+dist-desktop/
+build/
+design-system/
+
+# environment
+.env
+
+# Customer Lists = PII — never commit
+*.xlsx
+*.xls
+~$*
+
+# design references / photos
+*.jpg
+*.jpeg
+*.png
+
+# OS
+Thumbs.db
+.DS_Store

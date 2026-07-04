@@ -1,0 +1,32 @@
+{
+  "name": "facm",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Field Action Closure Monitoring — local analytics dashboard for BSC Field Action Customer Lists",
+  "workspaces": [
+    "packages/core",
+    "apps/server",
+    "apps/web"
+  ],
+  "scripts": {
+    "build": "npm run build -w @facm/core && npm run build -w @facm/server && npm run build -w @facm/web",
+    "dev": "npm run build -w @facm/core && concurrently -k -n server,web -c blue,magenta \"npm run dev -w @facm/server\" \"npm run dev -w @facm/web\"",
+    "start": "node apps/server/dist/main.js",
+    "test": "npm run test -w @facm/core && npm run test -w @facm/server",
+    "build:exe": "node scripts/build-exe.mjs",
+    "build:desktop": "node scripts/build-desktop.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "d3-geo": "^3.1.1",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3",
+    "postject": "^1.0.0-alpha.6",
+    "topojson-client": "^3.1.0",
+    "world-atlas": "^2.0.2"
+  },
+  "engines": {
+    "node": ">=23.4"
+  }
+}
