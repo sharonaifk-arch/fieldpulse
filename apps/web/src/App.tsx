@@ -1,10 +1,11 @@
-import { lazy, Suspense, useEffect, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
 import { HashRouter, Route, Routes, useLocation } from "react-router-dom";
 import { usePageEnter } from "./anim";
 import { Header, Sidebar } from "./components/layout";
 import { Skeleton, ToastHost } from "./components/ui";
 import { api, subscribe, type RunProgress } from "./api";
 import { useAppStore } from "./store";
+import { useT } from "./i18n";
 import { Overview } from "./pages/Overview";
 
 // pages secondaires en lazy-load : le dashboard reste instantané
@@ -38,10 +39,24 @@ function PageContainer({ children }: { children: ReactNode }) {
 }
 
 export default function App() {
+  const t = useT();
   const {
     theme, setTheme, setProgress, refreshResults, refreshAnnotations,
     setWatchedPath, setFilesChanged, setDebug, setDeadlineDays, setLang, toast,
   } = useAppStore();
+  const results = useAppStore((s) => s.results);
+  const alertedRef = useRef(false);
+
+  // alerte unique au démarrage si des FA critiques existent (deadline dépassée)
+  useEffect(() => {
+    if (alertedRef.current || results.length === 0) return;
+    const critical = results.filter((r) => r.critical).length;
+    if (critical > 0) {
+      alertedRef.current = true;
+      toast("error", t("dash.criticalAlert", { n: critical }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [results]);
 
   // initial state: theme class, server settings, latest results, SSE streams
   useEffect(() => {

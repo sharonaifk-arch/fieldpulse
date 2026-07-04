@@ -6,7 +6,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  CheckCircle2, MailQuestion, PackageX, Flame,
+  MailCheck, MailQuestion, PackageX, Flame,
   ArrowRight, UploadCloud, ChevronRight,
 } from "lucide-react";
 import type { StoredSummary } from "../api";
@@ -14,7 +14,7 @@ import { api } from "../api";
 import { useAppStore } from "../store";
 import { useT } from "../i18n";
 import { Card, KpiCard, Skeleton, StatusBadge } from "../components/ui";
-import { BreakdownBars, CompletionDonut, DeltaBadge, ProgressRing, QtyBars, TopCities } from "../components/charts";
+import { BreakdownBars, CompletionDonut, ProgressRing, QtyBars, TopCities } from "../components/charts";
 import { EuropeMap } from "../components/EuropeMap";
 import { useStaggerIn } from "../anim";
 
@@ -51,10 +51,66 @@ function EmptyDashboard() {
   );
 }
 
+/** Agrégation compacte par pays : FA, prêtes, ouvertes, qté, taux (barre). */
+function CountryTable({ results, onPick }: { results: StoredSummary[]; onPick: (c: string) => void }) {
+  const t = useT();
+  const map = new Map<string, StoredSummary[]>();
+  for (const r of results) {
+    const k = r.country ?? "—";
+    map.set(k, [...(map.get(k) ?? []), r]);
+  }
+  const rows = [...map.entries()].sort((a, b) => b[1].length - a[1].length);
+  const sum = (fas: StoredSummary[], f: (r: StoredSummary) => number) => fas.reduce((a, r) => a + f(r), 0);
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-[12.5px]">
+        <thead>
+          <tr className="text-left text-[10.5px] uppercase tracking-wider text-faint">
+            {[t("mgr.countryCol"), t("kpi.fas"), t("kpi.ready"), t("mon.open"), t("mon.qtyMissing"), t("kpi.completion")].map((h) => (
+              <th key={h} className="pb-2 font-semibold">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(([country, fas]) => {
+            const expected = sum(fas, (r) => r.kpis.expectedResponses);
+            const answered = sum(fas, (r) => r.kpis.formsReceived + r.kpis.closedByGfe);
+            const rate = expected ? answered / expected : 0;
+            const open = sum(fas, (r) => r.kpis.openResponses);
+            const qty = sum(fas, (r) => r.kpis.qtyMissing);
+            return (
+              <tr
+                key={country}
+                onClick={() => onPick(country)}
+                className="cursor-pointer border-t border-line/60 transition-colors hover:bg-surface-2/60"
+              >
+                <td className="py-2 font-semibold text-ink">{country}</td>
+                <td className="py-2 font-data tabular-nums">{fas.length}</td>
+                <td className="py-2 font-data tabular-nums text-ok">{fas.filter((r) => r.closureStatus === "ready").length}</td>
+                <td className={`py-2 font-data tabular-nums ${open ? "text-warn" : "text-faint"}`}>{open}</td>
+                <td className={`py-2 font-data tabular-nums ${qty ? "text-mid" : "text-faint"}`}>{qty}</td>
+                <td className="py-2">
+                  <div className="flex items-center gap-2">
+                    <div className="h-1.5 w-16 overflow-hidden rounded-full bg-surface-2">
+                      <div className="h-full rounded-full bg-accent" style={{ width: `${Math.round(rate * 100)}%` }} />
+                    </div>
+                    <span className="font-data text-[11px] tabular-nums text-muted">{Math.round(rate * 100)}%</span>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function Overview() {
   const t = useT();
   const nav = useNavigate();
-  const { results, runId, loadingResults } = useAppStore();
+  const { results, runId, loadingResults, setMonitoringSearch } = useAppStore();
   const staggerRef = useStaggerIn([results]);
   // deltas vs analyse précédente (silencieux si une seule analyse existe)
   const [deltas, setDeltas] = useState<{ open: number; qty: number } | null>(null);
@@ -116,33 +172,36 @@ export function Overview() {
 
   return (
     <div ref={staggerRef} className="flex flex-col gap-3">
-      {/* ---- KPIs héro : anneau d'avancement + 4 indicateurs à delta ---- */}
+      {/* ---- KPIs héro : anneau taux de clôture + 4 stat-cards à tendance ---- */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
         <ProgressRing
-          ratio={expected ? answered / expected : null}
-          label={t("dash.progress")}
-          sub={`${answered}/${expected} · ${openFas}/${results.length} ${t("dash.openFas")}`}
+          ratio={results.length ? count("ready") / results.length : null}
+          label={t("dash.closureRate")}
+          sub={`${count("ready")}/${results.length} ${t("kpi.fas")}`}
         />
         <KpiCard
-          label={t("kpi.ready")} value={count("ready")} tone="ok"
-          sub={count("ready") ? t("dash.readySub") : undefined} icon={<CheckCircle2 size={17} strokeWidth={1.9} />}
+          label={t("kpi.completion")}
+          value={expected ? Math.round((answered / expected) * 100) : 0}
+          format={(v) => `${Math.round(v)}%`}
+          tone="accent" icon={<MailCheck size={19} strokeWidth={2} />}
+          sub={`${answered}/${expected}`}
         />
         <KpiCard
           label={t("kpi.openResponses")} value={sum((r) => r.kpis.openResponses)}
           tone={sum((r) => r.kpis.openResponses) ? "warn" : "ok"}
-          badge={<DeltaBadge delta={deltas?.open ?? null} />}
+          trend={{ delta: deltas?.open ?? null, goodWhenDown: true }}
           sub={t("dash.openSub")}
-          icon={<MailQuestion size={17} strokeWidth={1.9} />}
+          icon={<MailQuestion size={19} strokeWidth={2} />}
         />
         <KpiCard
           label={t("kpi.qtyMissing")} value={sum((r) => r.kpis.qtyMissing)}
           tone={sum((r) => r.kpis.qtyMissing) ? "mid" : "ok"}
-          badge={<DeltaBadge delta={deltas?.qty ?? null} />}
-          sub={t("dash.qtySub")} icon={<PackageX size={17} strokeWidth={1.9} />}
+          trend={{ delta: deltas?.qty ?? null, goodWhenDown: true }}
+          sub={t("dash.qtySub")} icon={<PackageX size={19} strokeWidth={2} />}
         />
         <KpiCard
           label={t("kpi.critical")} value={critical} tone={critical ? "bad" : "ok"}
-          sub={critical ? t("dash.criticalSub") : t("prio.allClear")} icon={<Flame size={17} strokeWidth={1.9} />}
+          sub={critical ? t("dash.criticalSub") : t("prio.allClear")} icon={<Flame size={19} strokeWidth={2} />}
         />
       </div>
 
@@ -195,11 +254,18 @@ export function Overview() {
         </div>
       </div>
 
-      {/* ---- détail visuel ---- */}
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      {/* ---- suivi par pays ---- */}
+      <div className="grid gap-3 lg:grid-cols-3">
+        <Card title={t("dash.byCountry")} className="anim-item lg:col-span-2">
+          <CountryTable results={results} onPick={(c) => { setMonitoringSearch(c); nav("/monitoring"); }} />
+        </Card>
         <Card title={t("overview.statusBreakdown")} className="anim-item">
           <BreakdownBars entries={statusEntries} />
         </Card>
+      </div>
+
+      {/* ---- détail visuel ---- */}
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         <Card title={t("overview.byType")} className="anim-item">
           <BreakdownBars
             color="var(--accent)"

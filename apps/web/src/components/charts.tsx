@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react";
 import {
   Bar, BarChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
-import { animate } from "animejs";
+import gsap from "gsap";
 import { TrendingDown, TrendingUp } from "lucide-react";
 import type { StoredSummary } from "../api";
 import { useT } from "../i18n";
@@ -35,8 +35,8 @@ export function ProgressRing({ ratio, label, sub }: { ratio: number | null; labe
       c.style.strokeDashoffset = String(target);
       return;
     }
-    const a = animate(c, { strokeDashoffset: [CIRC, target], duration: 900, ease: "outCubic" });
-    return () => { a.pause(); };
+    const tw = gsap.fromTo(c, { strokeDashoffset: CIRC }, { strokeDashoffset: target, duration: 0.9, ease: "power3.out" });
+    return () => { tw.kill(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pctValue]);
 

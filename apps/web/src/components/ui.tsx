@@ -1,6 +1,6 @@
 /** Small design-system primitives — dark-first, Linear/Vercel-inspired. */
 import type { ReactNode } from "react";
-import { CheckCircle2, AlertTriangle, Info, X } from "lucide-react";
+import { CheckCircle2, AlertTriangle, Info, X, TrendingDown, TrendingUp } from "lucide-react";
 import type { ClosureStatus, FormStatus } from "@facm/core";
 import { useAppStore } from "../store";
 import { useT } from "../i18n";
@@ -36,34 +36,50 @@ const KPI_TONES: Record<KpiTone, { bg: string; fg: string }> = {
   idle: { bg: "bg-idle-soft", fg: "text-idle" },
 };
 
-export function KpiCard({ label, value, sub, tone = "idle", icon, badge, format }: {
+/** Stat-card style DashStack : label + icône carrée colorée en haut, gros
+ *  chiffre animé, ligne de tendance (delta) en bas. */
+export function KpiCard({ label, value, sub, tone = "idle", icon, trend, format }: {
   label: string; value: ReactNode; sub?: string; tone?: KpiTone;
   icon?: ReactNode;
-  /** élément affiché à côté de la valeur (ex : delta vs analyse précédente) */
-  badge?: ReactNode;
+  /** tendance vs analyse précédente : delta signé + si une baisse est positive */
+  trend?: { delta: number | null; goodWhenDown?: boolean };
   /** formatage du compteur animé quand value est un nombre */
   format?: (v: number) => string;
 }) {
   const t = KPI_TONES[tone];
   const numeric = typeof value === "number";
   const countRef = useCountUp(numeric ? (value as number) : 0, format);
+
+  let trendEl: ReactNode = null;
+  if (trend && trend.delta !== null && trend.delta !== 0) {
+    const good = trend.goodWhenDown ? trend.delta < 0 : trend.delta > 0;
+    trendEl = (
+      <span className={`inline-flex items-center gap-1 font-data text-[11px] font-semibold ${good ? "text-ok" : "text-bad"}`}>
+        {trend.delta > 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}
+        {trend.delta > 0 ? "+" : ""}{trend.delta}
+      </span>
+    );
+  }
+
   return (
-    <div className="anim-item flex items-start gap-3 rounded-2xl bg-surface px-4 py-3.5 shadow-[var(--shadow)] transition-[transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-[var(--shadow-lg)]">
-      {icon && (
-        <div className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${t.bg} ${t.fg}`}>
-          {icon}
+    <div className="anim-item flex flex-col gap-2 rounded-2xl bg-surface p-4 shadow-[var(--shadow)] transition-[transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-[var(--shadow-lg)]">
+      <div className="flex items-start justify-between gap-2">
+        <span className="text-[11.5px] font-semibold uppercase tracking-wide text-muted">{label}</span>
+        {icon && (
+          <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ${t.bg} ${t.fg}`}>
+            {icon}
+          </div>
+        )}
+      </div>
+      <div className="font-data text-[30px] font-bold leading-9 text-ink">
+        {numeric ? <span ref={countRef}>{String(value)}</span> : value}
+      </div>
+      {(sub || trendEl) && (
+        <div className="flex items-center gap-2">
+          {trendEl}
+          {sub && <span className="truncate text-[11px] text-faint">{sub}</span>}
         </div>
       )}
-      <div className="min-w-0">
-        <div className="truncate text-[11px] font-medium uppercase tracking-wider text-muted">{label}</div>
-        <div className="mt-0.5 flex items-center gap-2">
-          <span className="font-data text-[26px] font-semibold leading-8 text-ink">
-            {numeric ? <span ref={countRef}>{String(value)}</span> : value}
-          </span>
-          {badge}
-        </div>
-        {sub && <div className="mt-0.5 truncate text-[11px] text-faint">{sub}</div>}
-      </div>
     </div>
   );
 }

@@ -13,7 +13,6 @@
     "@fontsource/fira-sans": "^5.2.7",
     "@fontsource/nunito-sans": "^5.2.7",
     "@tanstack/react-table": "^8.20.6",
-    "animejs": "^4.5.0",
     "gsap": "^3.15.0",
     "lucide-react": "^0.469.0",
     "react": "^19.0.0",
