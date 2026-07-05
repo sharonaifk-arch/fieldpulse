@@ -82,8 +82,14 @@ npm start          # démarre le serveur local sur http://127.0.0.1:4560
 
 ```bash
 npm run dev        # serveur (4560) + Vite hot-reload (5173)
-npm test           # tests unitaires du moteur (25 tests)
+npm test           # tests unitaires (moteur + API)
+npm run guide      # régénère Guide-Utilisateur-FieldPulse.pdf (captures réelles)
 ```
+
+> Le guide utilisateur PDF est généré à partir de captures de l'app peuplée avec
+> vos données ; il contient donc des informations confidentielles et n'est **pas**
+> versionné (voir `.gitignore`). Lancez `npm run guide` après avoir chargé des
+> données pour le (re)créer localement.
 
 ## 3. Les trois modes de chargement
 
