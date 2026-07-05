@@ -31,13 +31,13 @@ export async function buildExcelExport(
   outPath: string
 ): Promise<void> {
   const wb = new ExcelJS.Workbook();
-  wb.creator = "FACM";
+  wb.creator = "FieldPulse";
   wb.created = new Date();
 
   /* ---- Global KPIs ---- */
   const kpi = wb.addWorksheet("Global KPIs");
   kpi.columns = [{ width: 40 }, { width: 18 }];
-  kpi.addRow([opts.title ?? "FACM — Global KPIs", ""]).font = { bold: true, size: 14 };
+  kpi.addRow([opts.title ?? "FieldPulse — Global KPIs", ""]).font = { bold: true, size: 14 };
   kpi.addRow(["Generated", new Date().toISOString()]);
   kpi.addRow([]);
   const tot = (f: (s: StoredSummary) => number) => summaries.reduce((a, s) => a + f(s), 0);

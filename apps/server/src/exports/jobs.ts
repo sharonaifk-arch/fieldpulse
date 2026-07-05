@@ -40,7 +40,7 @@ async function runJob(jobId: number, params: ExportParams): Promise<void> {
     }
     const ext = params.kind === "excel" ? "xlsx" : "pdf";
     const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
-    const outPath = path.join(DIRS.exports, `FACM_${params.kind}_${stamp}_${jobId}.${ext}`);
+    const outPath = path.join(DIRS.exports, `FieldPulse_${params.kind}_${stamp}_${jobId}.${ext}`);
 
     if (params.kind === "excel") {
       await buildExcelExport(summaries, { detailFaRefs: params.detailFaRefs, title: params.title }, outPath);

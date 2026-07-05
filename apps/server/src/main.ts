@@ -43,7 +43,7 @@ export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
     const header = req.headers["x-facm-token"];
     const query = (req.query as Record<string, string> | undefined)?.token;
     if (header === CONFIG.token || query === CONFIG.token) return done();
-    reply.code(401).send({ error: "Session invalide — relancez FACM depuis son raccourci." });
+    reply.code(401).send({ error: "Session invalide — relancez FieldPulse depuis son raccourci." });
   });
 
   // en-têtes durcis sur toutes les réponses
@@ -87,8 +87,8 @@ export async function startServer(): Promise<ServerInfo> {
   const url = `http://${CONFIG.host}:${port}`;
   const launchUrl = CONFIG.token ? `${url}/?facmtoken=${CONFIG.token}` : url;
 
-  console.log(`[FACM] ready on ${url} (workers: ${CONFIG.workers})`);
-  if (CONFIG.token) console.log(`[FACM] session: ${launchUrl}`);
+  console.log(`[FieldPulse] ready on ${url} (workers: ${CONFIG.workers})`);
+  if (CONFIG.token) console.log(`[FieldPulse] session: ${launchUrl}`);
   if (CONFIG.openBrowser) openBrowser(launchUrl);
 
   return { url, launchUrl, port, token: CONFIG.token };
@@ -100,11 +100,11 @@ if (isCli) {
   startServer().catch((e) => {
     if ((e as NodeJS.ErrnoException).code === "EADDRINUSE") {
       const url = `http://${CONFIG.host}:${CONFIG.port}`;
-      console.log(`[FACM] déjà en cours d'exécution sur ${url} — ouverture du navigateur.`);
+      console.log(`[FieldPulse] déjà en cours d'exécution sur ${url} — ouverture du navigateur.`);
       if (CONFIG.openBrowser) openBrowser(url);
       process.exit(0);
     }
-    console.error("[FACM] fatal:", e);
+    console.error("[FieldPulse] fatal:", e);
     process.exit(1);
   });
 }

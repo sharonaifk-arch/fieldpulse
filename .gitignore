@@ -24,8 +24,8 @@ design-system/
 *.png
 
 # guide utilisateur généré : contient des captures avec données réelles (PII)
+FieldPulse-User-Guide.pdf
 Guide-Utilisateur-FieldPulse.pdf
-scripts/.guide.tmp.html
 
 # OS
 Thumbs.db

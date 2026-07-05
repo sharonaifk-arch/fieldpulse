@@ -1,443 +1,382 @@
 /**
- * Génère "Guide-Utilisateur-FieldPulse.pdf" — guide utilisateur complet,
- * coloré, structuré, avec captures RÉELLES de l'application.
+ * Generates "FieldPulse-User-Guide.pdf" — a clean, colorful, well-structured
+ * user guide with REAL screenshots of the app.
  *
- * Pipeline (100% local, via Electron déjà installé) :
- *   1. démarre le serveur FieldPulse en mémoire (cache data/ existant)
- *   2. ouvre une fenêtre cachée, charge chaque écran, désactive les
- *      animations, capture la page en PNG
- *   3. assemble un document HTML riche (thème DashStack, police embarquée,
- *      captures intégrées en base64)
- *   4. Electron printToPDF → PDF fidèle (A4, couleurs, fonds)
+ * Pipeline (fully local, via the already-installed Electron):
+ *   1. start the FieldPulse server in-process (reuse existing data/ cache)
+ *   2. open a window, load each screen, freeze animations, capture a PNG
+ *   3. assemble a flowing HTML document (DashStack theme, embedded font,
+ *      screenshots inlined as base64)
+ *   4. Electron printToPDF -> faithful PDF (A4, colors, backgrounds)
  *
- * Lancement : npx electron scripts/gen-guide.mjs
+ * Run: npm run guide   (i.e. electron scripts/gen-guide.mjs)
+ *
+ * NOTE: capturePage() only paints a VISIBLE window on Windows, so the window
+ * is shown inactive (no focus stealing) rather than hidden — a hidden window
+ * yields blank captures.
  */
 import { app, BrowserWindow } from "electron";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const OUT_PDF = path.join(ROOT, "Guide-Utilisateur-FieldPulse.pdf");
+const OUT_PDF = path.join(ROOT, "FieldPulse-User-Guide.pdf");
+// intermediates in OS temp — the working dir is under OneDrive, which locks
+// files mid-write and breaks rmSync/writeFile.
+const WORK = path.join(os.tmpdir(), "fieldpulse-guide");
+const SHOTS_DIR = path.join(WORK, "shots");
+const SHOT_W = 1440;
+const SHOT_H = 900;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const b64 = (p) => fs.readFileSync(p).toString("base64");
 
-// police de marque embarquée (offline) — sinon printToPDF n'aurait pas Nunito
+// brand font embedded so printToPDF has Nunito Sans offline
 const FONT_DIR = path.join(ROOT, "node_modules/@fontsource/nunito-sans/files");
-const fontFace = (weight) => {
-  const f = path.join(FONT_DIR, `nunito-sans-latin-${weight}-normal.woff2`);
-  return `@font-face{font-family:'Nunito Sans';font-style:normal;font-weight:${weight};font-display:block;src:url(data:font/woff2;base64,${b64(f)}) format('woff2');}`;
-};
+const fontFace = (weight) =>
+  `@font-face{font-family:'Nunito Sans';font-weight:${weight};font-display:block;` +
+  `src:url(data:font/woff2;base64,${b64(path.join(FONT_DIR, `nunito-sans-latin-${weight}-normal.woff2`))}) format('woff2');}`;
 
-/* ---- configuration serveur : réutilise le cache existant ---- */
 process.env.FACM_PORT = "0";
 process.env.FACM_HOST = "127.0.0.1";
 process.env.FACM_OPEN_BROWSER = "0";
 process.env.FACM_WEB_DIST = path.join(ROOT, "apps/web/dist");
 process.env.FACM_DATA_DIR = path.join(ROOT, "data");
 
-const CSS_FREEZE = `
-*,*::before,*::after{animation:none !important;transition:none !important;}
-.anim-item{opacity:1 !important;transform:none !important;}
-`;
+const FREEZE_CSS = `*,*::before,*::after{animation:none!important;transition:none!important}.anim-item{opacity:1!important;transform:none!important}`;
 
-/** Charge une route (HashRouter), fige les animations, capture en PNG base64. */
-async function capture(win, base, hash, { wait = 1400, light = true } = {}) {
+/** capturePage occasionally throws a transient UnknownVizError between GPU
+ *  frames — retry a few times before giving up. */
+async function capturePng(win, tries = 4) {
+  for (let i = 1; ; i++) {
+    try {
+      return (await win.webContents.capturePage()).toPNG();
+    } catch (e) {
+      if (i >= tries) throw e;
+      await sleep(500);
+    }
+  }
+}
+
+/** Load a HashRouter route, freeze animations, capture PNG to disk.
+ *  Language/theme come from localStorage primed once before the loop. */
+async function capture(win, base, name, hash, waitMs) {
   await win.loadURL(`${base}#${hash}`);
-  await win.webContents.executeJavaScript(`
-    localStorage.setItem('facm.theme','${light ? "light" : "dark"}');
-    document.documentElement.classList.${light ? "remove" : "add"}('dark');
-    (function(){var s=document.getElementById('__freeze');if(!s){s=document.createElement('style');s.id='__freeze';document.head.appendChild(s);}s.textContent=${JSON.stringify(CSS_FREEZE)};})();
-    true;
-  `);
-  await sleep(wait);
-  const img = await win.webContents.capturePage();
-  return "data:image/png;base64," + img.toPNG().toString("base64");
+  await win.webContents.executeJavaScript(
+    `(function(){var s=document.getElementById('__freeze')||document.head.appendChild(Object.assign(document.createElement('style'),{id:'__freeze'}));s.textContent=${JSON.stringify(FREEZE_CSS)};})();true;`
+  );
+  await sleep(waitMs);
+  const png = await capturePng(win);
+  fs.writeFileSync(path.join(SHOTS_DIR, `${name}.png`), png);
+  return `data:image/png;base64,${png.toString("base64")}`;
 }
 
 async function main() {
-  const serverEntry = path.join(ROOT, "apps/server/dist/main.js");
-  const { startServer } = await import(pathToFileURL(serverEntry).href);
-  const info = await startServer();
-  const base = info.launchUrl; // http://127.0.0.1:PORT/?facmtoken=...
+  fs.rmSync(SHOTS_DIR, { recursive: true, force: true });
+  fs.mkdirSync(SHOTS_DIR, { recursive: true });
 
-  // récupère un fileHash pour l'écran "Détail FA" (on prend le Recall France)
+  const { startServer } = await import(pathToFileURL(path.join(ROOT, "apps/server/dist/main.js")).href);
+  const info = await startServer();
+
+  // pick a populated Recall FA for the detail screenshot
   let faHash = null;
   try {
     const res = await fetch(`${info.url}/api/runs/latest/results`, { headers: { "X-FACM-Token": info.token } });
-    const data = await res.json();
-    const pick = (data.results || []).find((r) => r.faType === "recall" && r.kpis.openResponses > 0) || (data.results || [])[0];
-    faHash = pick?.fileHash ?? null;
+    const { results = [] } = await res.json();
+    faHash = (results.find((r) => r.faType === "recall" && r.kpis.openResponses > 0) || results[0])?.fileHash ?? null;
   } catch {
-    /* détail FA sera omis */
+    /* detail screen skipped */
   }
 
   const win = new BrowserWindow({
-    width: 1440,
-    height: 900,
+    width: SHOT_W,
+    height: SHOT_H,
     show: false,
-    webPreferences: { offscreen: false, sandbox: false },
+    webPreferences: { sandbox: false, backgroundThrottling: false },
   });
+  win.showInactive(); // visible (required for capturePage) but never steals focus
 
+  // prime language + theme once — the app reads these from localStorage at
+  // mount, so every subsequent route renders in English / light for the guide.
+  await win.loadURL(info.launchUrl);
+  await win.webContents.executeJavaScript(
+    `localStorage.setItem('facm.lang','en');localStorage.setItem('facm.theme','light');true;`
+  );
+
+  const screens = [
+    ["dashboard", "/", 2200],
+    ["sources", "/sources", 1200],
+    ["monitoring", "/monitoring", 1400],
+    ...(faHash ? [["detail", `/fa/${faHash}`, 1800]] : []),
+    ["priorities", "/priority", 1300],
+    ["quality", "/quality", 1200],
+    ["exports", "/exports", 1200],
+    ["history", "/history", 1300],
+    ["settings", "/settings", 1200],
+  ];
   const shots = {};
-  shots.dashboard = await capture(win, base, "/");
-  shots.sources = await capture(win, base, "/sources");
-  shots.monitoring = await capture(win, base, "/monitoring");
-  if (faHash) shots.detail = await capture(win, base, `/fa/${faHash}`, { wait: 1800 });
-  shots.priorities = await capture(win, base, "/priority");
-  shots.quality = await capture(win, base, "/quality");
-  shots.exports = await capture(win, base, "/exports");
-  shots.history = await capture(win, base, "/history");
-  shots.settings = await capture(win, base, "/settings");
+  for (const [name, hash, wait] of screens) shots[name] = await capture(win, info.launchUrl, name, hash, wait);
 
-  const html = buildGuideHtml(shots);
-  const tmpHtml = path.join(ROOT, "scripts", ".guide.tmp.html");
-  fs.writeFileSync(tmpHtml, html, "utf8");
+  const tmpHtml = path.join(WORK, "guide.html");
+  fs.writeFileSync(tmpHtml, buildHtml(shots), "utf8");
   await win.loadFile(tmpHtml);
-  await sleep(600);
+  await sleep(700);
 
   const pdf = await win.webContents.printToPDF({
     pageSize: "A4",
     printBackground: true,
-    margins: { top: 0, bottom: 0, left: 0, right: 0 },
     preferCSSPageSize: true,
   });
   fs.writeFileSync(OUT_PDF, pdf);
-  fs.rmSync(tmpHtml, { force: true });
 
-  const mb = (fs.statSync(OUT_PDF).size / 1024 / 1024).toFixed(1);
-  console.log(`\n✔ Guide généré : ${OUT_PDF} (${mb} Mo)`);
+  console.log(`\n✔ Guide: ${OUT_PDF} (${(fs.statSync(OUT_PDF).size / 1024 / 1024).toFixed(1)} MB)`);
   app.quit();
   process.exit(0);
 }
 
-/* =======================================================================
-   Contenu du guide (HTML riche, thème DashStack)
-   ======================================================================= */
-function buildGuideHtml(s) {
+/* ======================= guide document (English) ======================= */
+function buildHtml(s) {
   const C = {
-    indigo: "#3749A6", accent: "#4880FF", accentSoft: "#EAF0FF",
-    bg: "#F5F6FA", ink: "#202224", muted: "#646B72", faint: "#9AA0A6",
+    indigo: "#3749A6", accent: "#4880FF", accentSoft: "#EAF0FF", bg: "#F5F6FA",
+    ink: "#202224", muted: "#646B72", faint: "#9AA0A6", line: "#E7EAF0",
     green: "#16A34A", greenSoft: "#E7F5EF", orange: "#EA580C", orangeSoft: "#FDEEE3",
-    amber: "#B45309", amberSoft: "#F8EFDD", red: "#DC2626", redSoft: "#FCEAEA",
-    line: "#E7EAF0", pulse: "#22C55E", white: "#FFFFFF",
+    amber: "#B45309", amberSoft: "#F8EFDD", red: "#DC2626", redSoft: "#FCEAEA", pulse: "#22C55E",
   };
 
-  const shot = (src, caption) =>
-    src
-      ? `<figure class="shot"><img src="${src}" alt="${caption}"/><figcaption>${caption}</figcaption></figure>`
-      : "";
+  const shot = (src, cap) =>
+    src ? `<figure class="shot"><img src="${src}"><figcaption>${cap}</figcaption></figure>` : "";
+  const note = (kind, ico, html) => `<div class="note ${kind}"><span class="ico">${ico}</span><div>${html}</div></div>`;
+  const step = (n, t, b) => `<div class="step"><div class="n">${n}</div><div><b>${t}</b><div class="sb">${b}</div></div></div>`;
+  const status = (color, name, desc) =>
+    `<tr><td><span class="dot" style="background:${color}"></span><b>${name}</b></td><td>${desc}</td></tr>`;
+  const sec = (num, title, body) =>
+    `<section><div class="sh"><span class="sn">${num}</span><h2>${title}</h2></div>${body}</section>`;
 
-  const badge = (txt, bg, fg) =>
-    `<span class="badge" style="background:${bg};color:${fg}">${txt}</span>`;
-
-  const statusRow = (color, soft, name, desc) => `
-    <tr>
-      <td><span class="dot" style="background:${color}"></span><b>${name}</b></td>
-      <td>${desc}</td>
-    </tr>`;
-
-  const step = (n, title, body) => `
-    <div class="step">
-      <div class="step-n">${n}</div>
-      <div><div class="step-t">${title}</div><div class="step-b">${body}</div></div>
-    </div>`;
-
-  const section = (id, num, title, sub, body) => `
-    <section${id ? ` id="${id}"` : ""}>
-      <div class="sec-head"><span class="sec-num">${num}</span><div><h2>${title}</h2>${sub ? `<p class="sec-sub">${sub}</p>` : ""}</div></div>
-      ${body}
-    </section>`;
-
-  return `<!doctype html><html lang="fr"><head><meta charset="utf-8">
-<style>
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><style>
 ${fontFace(400)}${fontFace(600)}${fontFace(700)}${fontFace(800)}
-@page { size: A4; margin: 0; }
-* { box-sizing: border-box; margin: 0; padding: 0; }
-html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-body { font-family:'Nunito Sans',system-ui,'Segoe UI',sans-serif; color:${C.ink}; font-size:11px; line-height:1.55; }
-.page { width:210mm; min-height:297mm; padding:16mm 15mm; page-break-after:always; position:relative; background:${C.white}; }
-.page:last-child { page-break-after:auto; }
+@page{size:A4;margin:15mm 14mm}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+body{font-family:'Nunito Sans',system-ui,'Segoe UI',sans-serif;color:${C.ink};font-size:11px;line-height:1.55}
+h2{font-size:17px;font-weight:800;letter-spacing:-.3px}
+h3{font-size:12.5px;font-weight:700;color:${C.indigo};margin:12px 0 6px}
+p{margin-bottom:7px}.muted{color:${C.muted}}
+code{background:${C.bg};padding:1px 5px;border-radius:4px;font-size:10px}
 
-/* --- cover --- */
-.cover { background:linear-gradient(150deg,${C.indigo} 0%,#2b3a8a 55%,#1f2a66 100%); color:#fff; display:flex; flex-direction:column; justify-content:center; padding:30mm 22mm; }
-.cover .logo { display:flex; align-items:center; gap:10px; margin-bottom:40px; }
-.cover .logo-badge { width:46px; height:46px; border-radius:14px; background:rgba(255,255,255,.14); display:flex; align-items:center; justify-content:center; }
-.cover .logo-txt { font-size:26px; font-weight:800; letter-spacing:-.5px; }
-.cover h1 { font-size:44px; font-weight:800; line-height:1.05; letter-spacing:-1px; margin-bottom:14px; }
-.cover .lead { font-size:15px; opacity:.85; max-width:130mm; margin-bottom:34px; }
-.cover .meta { display:flex; gap:26px; font-size:12px; opacity:.8; border-top:1px solid rgba(255,255,255,.2); padding-top:18px; }
-.cover .meta b { display:block; font-size:15px; opacity:1; font-weight:700; margin-top:3px; }
-.cover .pill { position:absolute; top:30mm; right:22mm; background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.25); padding:6px 14px; border-radius:99px; font-size:11px; font-weight:700; }
+/* cover — first page, full colored card */
+.cover{background:linear-gradient(150deg,${C.indigo},#2b3a8a 55%,#1f2a66);color:#fff;border-radius:16px;padding:26mm 18mm;min-height:255mm;display:flex;flex-direction:column;justify-content:center;break-after:page;position:relative}
+.cover .pill{position:absolute;top:16mm;right:16mm;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.25);padding:6px 14px;border-radius:99px;font-size:11px;font-weight:700}
+.logo{display:flex;align-items:center;gap:10px;margin-bottom:38px}
+.logo .lb{width:44px;height:44px;border-radius:13px;background:rgba(255,255,255,.14);display:flex;align-items:center;justify-content:center}
+.logo .lt{font-size:25px;font-weight:800;letter-spacing:-.5px}
+.cover h1{font-size:42px;font-weight:800;line-height:1.06;letter-spacing:-1px;margin-bottom:14px}
+.cover .lead{font-size:15px;opacity:.85;max-width:135mm;margin-bottom:32px}
+.cover .meta{display:flex;gap:28px;font-size:11px;opacity:.8;border-top:1px solid rgba(255,255,255,.2);padding-top:16px}
+.cover .meta b{display:block;font-size:14px;opacity:1;margin-top:3px}
 
-/* --- toc --- */
-.toc h2 { font-size:22px; font-weight:800; color:${C.indigo}; margin-bottom:18px; }
-.toc ol { list-style:none; counter-reset:t; }
-.toc li { counter-increment:t; display:flex; align-items:baseline; gap:12px; padding:9px 0; border-bottom:1px solid ${C.line}; font-size:12.5px; }
-.toc li::before { content:counter(t,decimal-leading-zero); font-weight:800; color:${C.accent}; font-size:13px; width:26px; }
-.toc li .d { flex:1; border-bottom:1px dotted ${C.line}; margin:0 8px; transform:translateY(-3px); }
-.toc li b { font-weight:700; }
+/* toc */
+.toc h2{color:${C.indigo};margin-bottom:14px}
+.toc ul{list-style:none;columns:2;column-gap:22px}
+.toc li{display:flex;gap:9px;align-items:baseline;padding:7px 0;font-size:11.5px;break-inside:avoid}
+.toc .k{font-weight:800;color:${C.accent};font-size:12px;width:20px}
 
-/* --- sections --- */
-section { margin-bottom:20px; }
-.sec-head { display:flex; gap:12px; align-items:flex-start; margin-bottom:12px; padding-bottom:10px; border-bottom:2px solid ${C.accentSoft}; }
-.sec-num { flex-shrink:0; width:30px; height:30px; border-radius:9px; background:${C.accent}; color:#fff; font-weight:800; font-size:14px; display:flex; align-items:center; justify-content:center; }
-.sec-head h2 { font-size:19px; font-weight:800; color:${C.ink}; letter-spacing:-.3px; }
-.sec-sub { font-size:11.5px; color:${C.muted}; margin-top:2px; }
-h3 { font-size:13px; font-weight:700; color:${C.indigo}; margin:14px 0 7px; }
-p { margin-bottom:8px; }
-.muted { color:${C.muted}; }
+/* sections flow naturally; keep each whole when it fits */
+section{break-inside:avoid;margin-bottom:16px}
+.sh{display:flex;gap:10px;align-items:center;margin-bottom:9px;padding-bottom:8px;border-bottom:2px solid ${C.accentSoft}}
+.sn{width:28px;height:28px;border-radius:8px;background:${C.accent};color:#fff;font-weight:800;font-size:13px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 
-/* --- screenshots --- */
-.shot { margin:12px 0 16px; border-radius:12px; overflow:hidden; border:1px solid ${C.line}; box-shadow:0 6px 20px rgba(20,30,60,.08); }
-.shot img { width:100%; display:block; }
-.shot figcaption { background:${C.bg}; color:${C.muted}; font-size:10px; font-weight:600; padding:7px 12px; border-top:1px solid ${C.line}; }
+.shot{margin:10px 0 14px;border-radius:11px;overflow:hidden;border:1px solid ${C.line};box-shadow:0 6px 18px rgba(20,30,60,.09);break-inside:avoid}
+.shot img{width:100%;display:block}
+.shot figcaption{background:${C.bg};color:${C.muted};font-size:10px;font-weight:600;padding:6px 11px;border-top:1px solid ${C.line}}
 
-/* --- callouts --- */
-.note { border-radius:10px; padding:11px 14px; margin:11px 0; font-size:11px; display:flex; gap:10px; }
-.note b { font-weight:700; }
-.note.tip { background:${C.greenSoft}; border-left:3px solid ${C.green}; }
-.note.warn { background:${C.orangeSoft}; border-left:3px solid ${C.orange}; }
-.note.info { background:${C.accentSoft}; border-left:3px solid ${C.accent}; }
-.note.ico { font-weight:800; }
+.note{border-radius:9px;padding:10px 13px;margin:9px 0;font-size:11px;display:flex;gap:9px;break-inside:avoid}
+.note .ico{font-weight:800;flex-shrink:0}
+.note.tip{background:${C.greenSoft};border-left:3px solid ${C.green}}.note.tip .ico{color:${C.green}}
+.note.warn{background:${C.orangeSoft};border-left:3px solid ${C.orange}}.note.warn .ico{color:${C.orange}}
+.note.info{background:${C.accentSoft};border-left:3px solid ${C.accent}}.note.info .ico{color:${C.accent}}
 
-/* --- steps --- */
-.step { display:flex; gap:12px; margin:9px 0; }
-.step-n { flex-shrink:0; width:24px; height:24px; border-radius:50%; background:${C.indigo}; color:#fff; font-weight:800; font-size:12px; display:flex; align-items:center; justify-content:center; }
-.step-t { font-weight:700; font-size:12px; }
-.step-b { font-size:11px; color:${C.muted}; }
+.step{display:flex;gap:10px;margin:8px 0;break-inside:avoid}
+.step .n{width:23px;height:23px;border-radius:50%;background:${C.indigo};color:#fff;font-weight:800;font-size:11px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.step .sb{font-size:10.5px;color:${C.muted}}
 
-/* --- tables --- */
-table { width:100%; border-collapse:collapse; margin:10px 0; font-size:11px; }
-th { background:${C.indigo}; color:#fff; text-align:left; padding:8px 11px; font-weight:700; font-size:10.5px; }
-td { padding:8px 11px; border-bottom:1px solid ${C.line}; vertical-align:top; }
-tr:nth-child(even) td { background:${C.bg}; }
-.dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:7px; vertical-align:middle; }
-.badge { display:inline-block; padding:2px 9px; border-radius:99px; font-size:10px; font-weight:700; }
+table{width:100%;border-collapse:collapse;margin:9px 0;font-size:11px}
+th{background:${C.indigo};color:#fff;text-align:left;padding:7px 10px;font-weight:700;font-size:10.5px}
+td{padding:7px 10px;border-bottom:1px solid ${C.line};vertical-align:top}
+tr:nth-child(even) td{background:${C.bg}}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:middle}
 
-/* --- KPI legend cards --- */
-.kpis { display:grid; grid-template-columns:1fr 1fr; gap:9px; margin:10px 0; }
-.kpi { border:1px solid ${C.line}; border-radius:10px; padding:10px 12px; }
-.kpi .t { font-weight:800; font-size:11.5px; }
-.kpi .d { font-size:10.5px; color:${C.muted}; margin-top:2px; }
-
-/* --- footer --- */
-.foot { position:absolute; bottom:9mm; left:15mm; right:15mm; display:flex; justify-content:space-between; font-size:9px; color:${C.faint}; border-top:1px solid ${C.line}; padding-top:6px; }
-.grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.cards{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:9px 0}
+.card{border:1px solid ${C.line};border-radius:10px;padding:9px 11px;break-inside:avoid}
+.card b{font-size:11.5px}.card .d{font-size:10.5px;color:${C.muted};margin-top:2px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:13px}
 </style></head><body>
 
-<!-- COVER -->
-<div class="page cover">
-  <div class="pill">Guide utilisateur · v1.0</div>
-  <div class="logo"><div class="logo-badge">
+<div class="cover">
+  <div class="pill">User Guide · v1.0</div>
+  <div class="logo"><div class="lb">
     <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="${C.pulse}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-  </div><span class="logo-txt">Field<span style="color:${C.pulse}">Pulse</span></span></div>
-  <h1>Suivez vos Field Actions<br>en un coup d'œil.</h1>
-  <p class="lead">FieldPulse centralise le suivi de clôture des Field Actions (Recall, Correction, Advisory) à partir de vos Customer Lists Excel — sans ouvrir un seul fichier à la main. 100 % local, 100 % hors-ligne.</p>
+  </div><span class="lt">Field<span style="color:${C.pulse}">Pulse</span></span></div>
+  <h1>Track your Field Actions<br>at a glance.</h1>
+  <p class="lead">FieldPulse reads your Excel Customer Lists and shows, in one screen, which Field Actions (Recall, Correction, Advisory) are ready to close, who hasn't replied, and what's overdue — without opening a single file by hand. Fully local, fully offline.</p>
   <div class="meta">
     <div>Application<b>FieldPulse Desktop</b></div>
-    <div>Usage<b>Interne · lecture seule</b></div>
-    <div>Données<b>Restent sur votre poste</b></div>
+    <div>Use<b>Internal · read-only</b></div>
+    <div>Data<b>Stays on your PC</b></div>
   </div>
 </div>
 
-<!-- TOC -->
-<div class="page toc">
-  <h2>Sommaire</h2>
-  <ol>
-    <li><b>À quoi sert FieldPulse</b><span class="d"></span><span class="muted">3</span></li>
-    <li><b>Installation</b><span class="d"></span><span class="muted">3</span></li>
-    <li><b>L'interface en un coup d'œil</b><span class="d"></span><span class="muted">4</span></li>
-    <li><b>Charger vos données (Sources)</b><span class="d"></span><span class="muted">4</span></li>
-    <li><b>Le Dashboard</b><span class="d"></span><span class="muted">5</span></li>
-    <li><b>Monitoring — la liste des FA</b><span class="d"></span><span class="muted">6</span></li>
-    <li><b>Détail d'une Field Action</b><span class="d"></span><span class="muted">7</span></li>
-    <li><b>Priorités</b><span class="d"></span><span class="muted">8</span></li>
-    <li><b>Qualité des données</b><span class="d"></span><span class="muted">8</span></li>
-    <li><b>Exports (Excel & PDF)</b><span class="d"></span><span class="muted">9</span></li>
-    <li><b>Historique & Paramètres</b><span class="d"></span><span class="muted">9</span></li>
-    <li><b>Comprendre les statuts de clôture</b><span class="d"></span><span class="muted">10</span></li>
-    <li><b>Sécurité & confidentialité</b><span class="d"></span><span class="muted">11</span></li>
-    <li><b>Questions fréquentes</b><span class="d"></span><span class="muted">11</span></li>
-  </ol>
+<div class="toc">
+  <h2>Contents</h2>
+  <ul>
+    <li><span class="k">1</span><span>What FieldPulse does</span></li>
+    <li><span class="k">2</span><span>Install</span></li>
+    <li><span class="k">3</span><span>The interface</span></li>
+    <li><span class="k">4</span><span>Load your data (Sources)</span></li>
+    <li><span class="k">5</span><span>The Dashboard</span></li>
+    <li><span class="k">6</span><span>Monitoring</span></li>
+    <li><span class="k">7</span><span>Field Action detail</span></li>
+    <li><span class="k">8</span><span>Priorities</span></li>
+    <li><span class="k">9</span><span>Data quality</span></li>
+    <li><span class="k">10</span><span>Exports</span></li>
+    <li><span class="k">11</span><span>History &amp; Settings</span></li>
+    <li><span class="k">12</span><span>Closure statuses</span></li>
+    <li><span class="k">13</span><span>Security &amp; privacy</span></li>
+    <li><span class="k">14</span><span>FAQ</span></li>
+  </ul>
 </div>
 
-<!-- PAGE 3 : intro + install -->
-<div class="page">
-  ${section("", "1", "À quoi sert FieldPulse", "Le problème qu'il résout",
-    `<p>Chaque Field Action génère un fichier Excel « Customer List » qui recense les clients concernés, les formulaires reçus (VF / Ackn. Form) et les quantités retournées. Suivre l'avancement de clôture obligeait à <b>ouvrir chaque fichier un par un</b>.</p>
-     <p>FieldPulse lit ces fichiers automatiquement et répond en une seconde aux questions clés :</p>
-     <div class="kpis">
-       <div class="kpi"><div class="t">Quelles FA sont prêtes à clôturer&nbsp;?</div></div>
-       <div class="kpi"><div class="t">Qui n'a pas renvoyé son formulaire&nbsp;?</div></div>
-       <div class="kpi"><div class="t">Quelles quantités manquent&nbsp;?</div></div>
-       <div class="kpi"><div class="t">Quelles FA ont dépassé le délai&nbsp;?</div></div>
-     </div>
-     <div class="note tip"><span class="ico">✓</span><div><b>Lecture seule garantie.</b> FieldPulse n'écrit jamais dans vos fichiers Excel. Il les lit, calcule, et affiche — c'est tout.</div></div>`)}
+${sec("1", "What FieldPulse does",
+  `<p>Every Field Action produces an Excel "Customer List": which customers are affected, which forms came back (VF / Ackn. Form), and which quantities were returned. Tracking closure used to mean opening each file one by one.</p>
+   <p>FieldPulse reads them all automatically and answers the key questions instantly:</p>
+   <div class="cards">
+     <div class="card"><b>Which FAs are ready to close?</b></div>
+     <div class="card"><b>Who hasn't returned their form?</b></div>
+     <div class="card"><b>Which quantities are still missing?</b></div>
+     <div class="card"><b>Which FAs are overdue?</b></div>
+   </div>
+   ${note("tip", "✓", "<b>Read-only, guaranteed.</b> FieldPulse never writes to your Excel files. It reads, computes, and displays — nothing else.")}`)}
 
-  ${section("", "2", "Installation", "Aucune compétence technique requise",
-    `<p>Deux façons de lancer l'application, au choix :</p>
-     ${step("A", "Installeur (recommandé)", "Double-cliquez <b>FieldPulse-Setup-1.0.0.exe</b> → choisissez le dossier → raccourcis Bureau et menu Démarrer créés automatiquement.")}
-     ${step("B", "Version portable", "Copiez <b>FieldPulse-Portable-1.0.0.exe</b> où vous voulez (clé USB, dossier partagé) et double-cliquez. Aucune installation.")}
-     <div class="note warn"><span class="ico">!</span><div><b>Premier lancement Windows.</b> SmartScreen peut afficher un avertissement (application non signée). Cliquez « <b>Informations complémentaires</b> » puis « <b>Exécuter quand même</b> ». C'est normal pour une app interne.</div></div>
-     <p class="muted">L'app s'ouvre dans sa propre fenêtre. Vos données (cache, exports, commentaires) sont stockées dans <code>%APPDATA%\\FieldPulse</code>.</p>`)}
-  <div class="foot"><span>FieldPulse — Guide utilisateur</span><span>3</span></div>
-</div>
+${sec("2", "Install",
+  `<p>Two ways to run the app — pick either:</p>
+   ${step("A", "Installer (recommended)", "Double-click <b>FieldPulse-Setup-1.0.0.exe</b>, pick a folder — Desktop and Start-menu shortcuts are created for you.")}
+   ${step("B", "Portable", "Copy <b>FieldPulse-Portable-1.0.0.exe</b> anywhere (USB stick, shared folder) and double-click. No install.")}
+   ${note("warn", "!", "<b>First Windows launch.</b> SmartScreen may warn (app not signed). Click <b>More info</b> then <b>Run anyway</b> — normal for an internal app.")}
+   <p class="muted">Your data (cache, exports, notes) lives in <code>%APPDATA%\\FieldPulse</code>.</p>`)}
 
-<!-- PAGE 4 : interface + sources -->
-<div class="page">
-  ${section("", "3", "L'interface en un coup d'œil", "Trois zones à connaître",
-    `<div class="grid2">
-      <div>
-       ${step("1", "La barre latérale", "Navigation entre les écrans. Cliquez la flèche en bas pour la réduire en icônes. Les pastilles rouges/oranges signalent les vraies alertes.")}
-       ${step("2", "L'en-tête", "Titre de l'écran, date de dernière analyse, bouton d'actualisation, langue (FR/EN) et thème clair/sombre.")}
-       ${step("3", "Le contenu", "Cartes, tableaux et graphiques animés qui s'adaptent à vos données.")}
-      </div>
-      <div>
-       <div class="note info"><span class="ico">i</span><div><b>Thème clair ou sombre&nbsp;:</b> cliquez l'icône lune/soleil en haut à droite. Votre choix est mémorisé.</div></div>
-       <div class="note info"><span class="ico">FR</span><div><b>Français ou anglais&nbsp;:</b> bouton FR/EN, à côté du thème.</div></div>
-      </div>
-     </div>`)}
+${sec("3", "The interface",
+  `<div class="grid2"><div>
+     ${step("1", "Sidebar", "Move between screens. Click the arrow at the bottom to collapse it to icons. Red/orange dots flag real alerts only.")}
+     ${step("2", "Header", "Screen title, last-analysis date, refresh button, language (EN/FR) and light/dark theme.")}
+     ${step("3", "Content", "Animated cards, tables and charts that adapt to your data.")}
+   </div><div>
+     ${note("info", "◐", "<b>Light or dark:</b> the sun/moon icon, top right. Your choice is remembered.")}
+     ${note("info", "EN", "<b>English or French:</b> the EN/FR button, next to the theme.")}
+   </div></div>`)}
 
-  ${section("", "4", "Charger vos données", "Écran « Sources » — 3 méthodes",
-    `${shot(s.sources, "Écran Sources — upload, scan de dossier et favoris")}
-     ${step("1", "Upload manuel", "Glissez-déposez un ou plusieurs fichiers .xlsx. Analyse immédiate.")}
-     ${step("2", "Scan de dossier (le plus puissant)", "Collez le chemin d'un dossier Teams/OneDrive synchronisé. FieldPulse trouve tous les Customer Lists, même dans les sous-dossiers. « Options avancées » : filtrer par pays, mots-clés, taille.")}
-     ${step("3", "Bibliothèque", "Sauvegardez vos dossiers favoris pour les recharger en un clic.")}
-     <div class="note tip"><span class="ico">✓</span><div><b>Cache intelligent.</b> Un fichier déjà analysé et inchangé n'est pas relu (détection par empreinte). Relancer un scan est quasi instantané. Bouton « Forcer l'analyse complète » si besoin.</div></div>`)}
-  <div class="foot"><span>FieldPulse — Guide utilisateur</span><span>4</span></div>
-</div>
+${sec("4", "Load your data",
+  `<p class="muted">Screen "Sources" — three ways to bring in Customer Lists.</p>
+   ${shot(s.sources, "Sources — upload, folder scan and favorites")}
+   ${step("1", "Manual upload", "Drag &amp; drop one or more .xlsx files. Analyzed immediately.")}
+   ${step("2", "Folder scan (most powerful)", "Paste the path of a synced Teams/OneDrive folder. FieldPulse finds every Customer List, sub-folders included. Advanced options filter by country, keyword, size.")}
+   ${step("3", "Library", "Save favorite folders to reload them in one click.")}
+   ${note("tip", "✓", "<b>Smart cache.</b> A file already analyzed and unchanged is not re-read (content fingerprint). Re-scanning is near-instant. Use \"Force full analysis\" when needed.")}`)}
 
-<!-- PAGE 5 : dashboard -->
-<div class="page">
-  ${section("", "5", "Le Dashboard", "Votre tableau de bord — tout comprendre en 10 secondes",
-    `${shot(s.dashboard, "Dashboard — indicateurs clés, carte des pays, priorités")}
-     <h3>Les indicateurs du haut</h3>
-     <table>
-       <tr><th>Indicateur</th><th>Ce qu'il vous dit</th></tr>
-       <tr><td><b>Taux de clôture</b></td><td>Part des FA prêtes à clôturer sur le total (anneau animé).</td></tr>
-       <tr><td><b>Taux de réponse</b></td><td>Formulaires reçus sur formulaires attendus.</td></tr>
-       <tr><td><b>Réponses ouvertes</b></td><td>Clients qui n'ont pas encore répondu. La flèche indique l'évolution depuis la dernière analyse.</td></tr>
-       <tr><td><b>Qté manquante</b></td><td>Unités qui restent à réceptionner.</td></tr>
-       <tr><td><b>Critiques</b></td><td>FA dont le délai de notification est dépassé.</td></tr>
-     </table>
-     <div class="grid2">
-       <div>${step("Carte", "Field Actions par pays", "Chaque pays est coloré selon son statut le plus urgent. Cliquez un pays pour filtrer le Monitoring dessus.")}</div>
-       <div>${step("Priorité", "À traiter en priorité", "Les FA les plus urgentes avec l'action suggérée. Cliquez pour ouvrir le détail.")}</div>
-     </div>`)}
-  <div class="foot"><span>FieldPulse — Guide utilisateur</span><span>5</span></div>
-</div>
+${sec("5", "The Dashboard",
+  `<p class="muted">Your control tower — everything in ten seconds.</p>
+   ${shot(s.dashboard, "Dashboard — key indicators, country map, priorities")}
+   <table>
+     <tr><th>Indicator</th><th>What it tells you</th></tr>
+     <tr><td><b>Closure rate</b></td><td>Share of FAs ready to close, out of the total (animated ring).</td></tr>
+     <tr><td><b>Response rate</b></td><td>Forms received vs forms expected.</td></tr>
+     <tr><td><b>Open responses</b></td><td>Customers who haven't replied yet. The arrow shows the change since the last analysis.</td></tr>
+     <tr><td><b>Qty missing</b></td><td>Units still to be received.</td></tr>
+     <tr><td><b>Critical</b></td><td>FAs past their notification deadline.</td></tr>
+   </table>
+   <div class="grid2"><div>${step("Map", "Field Actions by country", "Each country is colored by its most urgent status. Click one to filter Monitoring.")}</div>
+   <div>${step("List", "Needs attention", "The most urgent FAs with a suggested action. Click to open the detail.")}</div></div>`)}
 
-<!-- PAGE 6 : monitoring -->
-<div class="page">
-  ${section("", "6", "Monitoring", "La liste complète et filtrable de vos Field Actions",
-    `${shot(s.monitoring, "Monitoring — filtres rapides, dispositif, prochaine action")}
-     <h3>Filtrer rapidement</h3>
-     <p>Deux rangées de filtres cumulables : par <b>statut</b> (Toutes, Critiques, Waiting Forms/GFE, Waiting Reconciliation, Ready, Bloquées) et par <b>type</b> (Recall, Correction, Advisory). Le compteur de chaque filtre indique le nombre de FA.</p>
-     <h3>Colonnes utiles</h3>
-     <table>
-       <tr><th>Colonne</th><th>Signification</th></tr>
-       <tr><td><b>Dispositif</b></td><td>Le produit concerné, déduit du dossier ou de la description.</td></tr>
-       <tr><td><b>Statut</b></td><td>Badge coloré de clôture (voir section 11).</td></tr>
-       <tr><td><b>Prochaine action</b></td><td>Ce qu'il reste à faire, calculé automatiquement.</td></tr>
-       <tr><td><b>Icône Excel</b></td><td>Ouvre le fichier source dans Excel pour le modifier.</td></tr>
-     </table>
-     <div class="note info"><span class="ico">i</span><div>Recherchez, triez chaque colonne, personnalisez les colonnes visibles et paginez. Cliquez une ligne pour ouvrir le détail complet.</div></div>`)}
-  <div class="foot"><span>FieldPulse — Guide utilisateur</span><span>6</span></div>
-</div>
+${sec("6", "Monitoring",
+  `<p class="muted">The full, filterable list of your Field Actions.</p>
+   ${shot(s.monitoring, "Monitoring — quick filters, device, next action")}
+   <p>Two rows of stackable filters: by <b>status</b> (All, Critical, Waiting Forms/GFE, Waiting Reconciliation, Ready, Blocked) and by <b>type</b> (Recall, Correction, Advisory). Each filter shows a count.</p>
+   <table>
+     <tr><th>Column</th><th>Meaning</th></tr>
+     <tr><td><b>Device</b></td><td>The product concerned, taken from the folder name (or the description).</td></tr>
+     <tr><td><b>Status</b></td><td>Colored closure badge (see section 12).</td></tr>
+     <tr><td><b>Next action</b></td><td>What's left to do, computed automatically.</td></tr>
+     <tr><td><b>Excel icon</b></td><td>Opens the source file in Excel to edit it.</td></tr>
+   </table>
+   ${note("info", "i", "Search, sort any column, choose visible columns, paginate. Click a row to open the full detail.")}`)}
 
-<!-- PAGE 7 : detail FA -->
-<div class="page">
-  ${section("", "7", "Détail d'une Field Action", "Tout savoir sur une FA précise",
-    `${shot(s.detail, "Détail FA — onglet Résumé : évolution, blocage, clients à traiter")}
-     <p>L'onglet <b>Résumé</b> est décisionnel : en une lecture vous savez <b>où en est la FA</b>, <b>pourquoi</b> elle est bloquée et <b>quoi faire ensuite</b>.</p>
-     <table>
-       <tr><th>Onglet</th><th>Contenu</th></tr>
-       <tr><td><b>Résumé</b></td><td>Courbes d'évolution (réponses, quantités, taux), raison du blocage, clients prioritaires.</td></tr>
-       <tr><td><b>Clients (Sold To)</b></td><td>Un ligne par client, statut de réponse et quantités.</td></tr>
-       <tr><td><b>Lignes</b></td><td>Le détail ligne par ligne du fichier (paginé).</td></tr>
-       <tr><td><b>Qualité</b></td><td>Anomalies éventuelles du fichier.</td></tr>
-       <tr><td><b>Suivi</b></td><td>Vos commentaires internes et un statut manuel (À relancer, En attente client, Escaladé…).</td></tr>
-     </table>
-     <div class="note tip"><span class="ico">✓</span><div><b>Ouvrir dans Excel</b> (bouton en haut à droite) ouvre le fichier source original pour le corriger. Au retour, relancez l'analyse pour rafraîchir.</div></div>`)}
-  <div class="foot"><span>FieldPulse — Guide utilisateur</span><span>7</span></div>
-</div>
+${sec("7", "Field Action detail",
+  `<p class="muted">Everything about one FA.</p>
+   ${shot(s.detail, "FA detail — Summary tab: trend, blocker, customers to handle")}
+   <p>The <b>Summary</b> tab is decision-ready: in one read you see <b>where the FA stands</b>, <b>why</b> it's blocked and <b>what to do next</b>.</p>
+   <table>
+     <tr><th>Tab</th><th>Content</th></tr>
+     <tr><td><b>Summary</b></td><td>Trend lines (responses, quantities, rate), blocker reason, priority customers.</td></tr>
+     <tr><td><b>Customers</b></td><td>One row per customer, response status and quantities.</td></tr>
+     <tr><td><b>Lines</b></td><td>The file line by line (paginated).</td></tr>
+     <tr><td><b>Quality</b></td><td>Any anomalies in the file.</td></tr>
+     <tr><td><b>Follow-up</b></td><td>Your internal notes and a manual status (To chase, Waiting customer, Escalated…).</td></tr>
+   </table>
+   ${note("tip", "✓", "<b>Open in Excel</b> (top-right) opens the original source file to fix it. Re-run the analysis afterwards to refresh.")}`)}
 
-<!-- PAGE 8 : priorities + quality -->
-<div class="page">
-  ${section("", "8", "Priorités", "Ce qui demande votre attention, regroupé",
-    `${shot(s.priorities, "Priorités — critiques, en attente, résumé manager")}
-     <p>Cet écran regroupe les FA critiques, celles en attente de formulaires et celles en attente de réconciliation. En bas, un <b>résumé prêt à copier-coller</b> pour votre manager, généré automatiquement.</p>`)}
+${sec("8", "Priorities",
+  `${shot(s.priorities, "Priorities — critical, waiting, manager summary")}
+   <p>Groups the critical FAs, those waiting for forms and those waiting for reconciliation. At the bottom: a <b>ready-to-paste summary for your manager</b>, generated automatically.</p>`)}
 
-  ${section("", "9", "Qualité des données", "Uniquement quand c'est nécessaire",
-    `${shot(s.quality, "Qualité des données — anomalies actionnables")}
-     <p class="muted">Cet écran ne montre que les <b>vraies anomalies</b> en langage clair (fichier illisible, valeur suspecte…). Les détails techniques de détection de colonnes restent masqués sauf en mode debug.</p>`)}
-  <div class="foot"><span>FieldPulse — Guide utilisateur</span><span>8</span></div>
-</div>
+${sec("9", "Data quality",
+  `${shot(s.quality, "Data quality — actionable anomalies only")}
+   <p class="muted">This screen shows only <b>real anomalies</b> in plain language (unreadable file, suspicious value…). Technical column-detection details stay hidden unless debug mode is on.</p>`)}
 
-<!-- PAGE 9 : exports + history + settings -->
-<div class="page">
-  ${section("", "10", "Exports", "Des rapports lisibles hors de l'app",
-    `${shot(s.exports, "Exports — Excel détaillé et rapport PDF visuel")}
-     <div class="grid2">
-       <div>${step("Excel", "Classeur détaillé", "KPIs globaux, vue Monitoring (lignes teintées par statut), lignes bloquantes, détail par FA.")}</div>
-       <div>${step("PDF", "Rapport visuel", "Bandeau, cartes KPI colorées, barres de progression, priorités. Idéal pour un point d'avancement.")}</div>
-     </div>
-     <p class="muted">Option « vue filtrée uniquement » pour n'exporter que ce que vous voyez. Génération en arrière-plan : l'app ne se fige jamais.</p>`)}
+${sec("10", "Exports",
+  `${shot(s.exports, "Exports — detailed Excel and visual PDF report")}
+   <div class="grid2"><div>${step("Excel", "Detailed workbook", "Global KPIs, Monitoring view (rows tinted by status), blocking lines, per-FA detail.")}</div>
+   <div>${step("PDF", "Visual report", "Header, colored KPI cards, progress bars, priorities. Ideal for a status update.")}</div></div>
+   <p class="muted">A "filtered view only" option exports just what you see. Generation runs in the background — the app never freezes.</p>`)}
 
-  ${section("", "11", "Historique & Paramètres", "",
-    `<div class="grid2">
-      <div>${shot(s.history, "Historique des analyses")}</div>
-      <div>${shot(s.settings, "Paramètres")}</div>
-     </div>
-     <p><b>Historique</b> : la liste des analyses passées et un comparatif (diff) avec la précédente. <b>Paramètres</b> : langue, thème, délai avant qu'une FA soit « critique », et gestion du cache.</p>`)}
-  <div class="foot"><span>FieldPulse — Guide utilisateur</span><span>9</span></div>
-</div>
+${sec("11", "History & Settings",
+  `<div class="grid2"><div>${shot(s.history, "Analysis history")}</div><div>${shot(s.settings, "Settings")}</div></div>
+   <p><b>History</b>: past analyses and a diff against the previous one. <b>Settings</b>: language, theme, the delay before an FA becomes "critical", and cache management.</p>`)}
 
-<!-- PAGE 10 : statuses -->
-<div class="page">
-  ${section("", "12", "Comprendre les statuts de clôture", "Le cœur du suivi",
-    `<p>Chaque Field Action passe par ces états, dans cet ordre logique :</p>
-     <table>
-       <tr><th>Statut</th><th>Signification &amp; action</th></tr>
-       ${statusRow(C.orange, C.orangeSoft, "Waiting Forms/GFE", "Des clients n'ont pas renvoyé leur formulaire (VF / Ackn. Form). <b>Action :</b> relancer les clients.")}
-       ${statusRow(C.amber, C.amberSoft, "Waiting Reconciliation", "Formulaires reçus, mais des quantités restent à réceptionner. <b>Action :</b> réconcilier le produit.")}
-       ${statusRow(C.green, C.greenSoft, "Ready for Closure", "Formulaires complets et quantités réconciliées. <b>Action :</b> clôturer la FA.")}
-       ${statusRow(C.red, C.redSoft, "Bloqué", "Le fichier n'a pas pu être analysé correctement. <b>Action :</b> vérifier le fichier source.")}
-     </table>
-     <h3>Les trois types de Field Action</h3>
-     <p>${badge("Recall", C.accentSoft, C.accent)} et ${badge("Correction", C.accentSoft, C.accent)} suivent les retours/corrections de produit via la colonne <b>VF</b> et la réconciliation des quantités. ${badge("Advisory", C.accentSoft, C.accent)} suit uniquement l'accusé de réception (Ackn. Form), sans retour produit.</p>
-     <div class="note info"><span class="ico">i</span><div><b>RGA manquant</b> est signalé mais ne bloque jamais une clôture à lui seul.</div></div>`)}
-  <div class="foot"><span>FieldPulse — Guide utilisateur</span><span>10</span></div>
-</div>
+${sec("12", "Closure statuses",
+  `<p>Every Field Action moves through these states, in this order:</p>
+   <table>
+     <tr><th>Status</th><th>Meaning &amp; action</th></tr>
+     ${status(C.orange, "Waiting Forms/GFE", "Customers haven't returned their form (VF / Ackn. Form). <b>Do:</b> chase the customers.")}
+     ${status(C.amber, "Waiting Reconciliation", "Forms in, but quantities still to be received. <b>Do:</b> reconcile the product.")}
+     ${status(C.green, "Ready for Closure", "Forms complete and quantities reconciled. <b>Do:</b> close the FA.")}
+     ${status(C.red, "Blocked", "The file couldn't be analyzed. <b>Do:</b> check the source file.")}
+   </table>
+   <h3>The three Field Action types</h3>
+   <p><b>Recall</b> and <b>Correction</b> track product returns/corrections via the <b>VF</b> column and quantity reconciliation. <b>Advisory</b> tracks only the acknowledgement (Ackn. Form), with no product return.</p>
+   ${note("info", "i", "<b>Missing RGA</b> is flagged but never blocks a closure on its own.")}`)}
 
-<!-- PAGE 11 : security + faq -->
-<div class="page">
-  ${section("", "13", "Sécurité & confidentialité", "Vos données restent chez vous",
-    `<div class="kpis">
-      <div class="kpi"><div class="t">100 % local</div><div class="d">Aucune connexion internet, aucune donnée envoyée à l'extérieur.</div></div>
-      <div class="kpi"><div class="t">Lecture seule</div><div class="d">Les fichiers Excel sources ne sont jamais modifiés.</div></div>
-      <div class="kpi"><div class="t">Accès protégé</div><div class="d">L'app se verrouille sur votre session ; aucun autre programme du poste ne peut lire les données.</div></div>
-      <div class="kpi"><div class="t">Données isolées</div><div class="d">Cache et exports rangés dans votre profil utilisateur, jamais dans le dossier source.</div></div>
-     </div>`)}
+${sec("13", "Security & privacy",
+  `<div class="cards">
+     <div class="card"><b>100% local</b><div class="d">No internet, no data sent anywhere.</div></div>
+     <div class="card"><b>Read-only</b><div class="d">Source Excel files are never modified.</div></div>
+     <div class="card"><b>Protected access</b><div class="d">The app locks to your session; no other program on the PC can read the data.</div></div>
+     <div class="card"><b>Isolated data</b><div class="d">Cache and exports live in your user profile, never in the source folder.</div></div>
+   </div>`)}
 
-  ${section("", "14", "Questions fréquentes", "",
-    `<h3>L'app a modifié mon fichier Excel ?</h3>
-     <p class="muted">Non, jamais. FieldPulse ouvre les fichiers en lecture seule. La seule façon de modifier un fichier est le bouton « Ouvrir dans Excel », qui vous rend la main dans Excel.</p>
-     <h3>Un mauvais dispositif s'affiche ?</h3>
-     <p class="muted">Le nom du dispositif vient du sous-dossier qui contient le fichier (ou, à défaut, de la description produit). Rangez vos Customer Lists dans un sous-dossier au nom du dispositif pour un affichage exact.</p>
-     <h3>Les courbes d'évolution sont plates ?</h3>
-     <p class="muted">C'est normal tant qu'il n'y a qu'une analyse. Relancez une analyse à quelques jours d'intervalle : les tendances apparaîtront.</p>
-     <h3>Windows m'avertit au lancement ?</h3>
-     <p class="muted">SmartScreen le fait pour toute app non signée. « Informations complémentaires » → « Exécuter quand même ».</p>`)}
-  <div class="foot"><span>FieldPulse — Guide utilisateur · v1.0</span><span>11</span></div>
-</div>
+${sec("14", "FAQ",
+  `<h3>Did the app change my Excel file?</h3>
+   <p class="muted">No, never. FieldPulse opens files read-only. The only way to edit a file is the "Open in Excel" button, which hands you back to Excel.</p>
+   <h3>A wrong device name shows up?</h3>
+   <p class="muted">The device name comes from the sub-folder that holds the file (or, failing that, the product description). Keep each Customer List in a sub-folder named after the device for an exact match.</p>
+   <h3>The trend lines are flat?</h3>
+   <p class="muted">Normal while there's only one analysis. Re-run an analysis a few days apart and the trends appear.</p>
+   <h3>Windows warns me at launch?</h3>
+   <p class="muted">SmartScreen does this for any unsigned app. "More info" → "Run anyway".</p>`)}
 
 </body></html>`;
 }
 
 main().catch((e) => {
-  console.error("[guide] échec:", e);
+  console.error("[guide] failed:", e);
   process.exit(1);
 });

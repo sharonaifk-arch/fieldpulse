@@ -6,7 +6,7 @@
  *                            → packagé via extraResources (copie brute : la
  *                            collecte node_modules d'electron-builder perd des
  *                            dépendances transitives dans la cible portable)
- *   dist-desktop/out/        FACM-Setup-<v>.exe (NSIS) + FACM-Portable-<v>.exe
+ *   dist-desktop/out/        FieldPulse-Setup-<v>.exe (NSIS) + FieldPulse-Portable-<v>.exe
  *
  * Usage : npm run build:desktop [-- --dir]
  */

@@ -218,7 +218,7 @@ const fr = {
   "map.title": "Field Actions par pays",
   // misc
   "misc.loading": "Chargement…",
-  "misc.empty.title": "Bienvenue sur FACM",
+  "misc.empty.title": "Bienvenue sur FieldPulse",
   "misc.empty.body": "Chargez vos Customer Lists (upload ou scan d'un dossier Teams) et le tableau de bord se remplit tout seul. Les fichiers sources ne sont jamais modifiés.",
   "misc.empty.cta": "Charger des fichiers",
   "misc.error": "Une erreur est survenue",
@@ -415,7 +415,7 @@ const en: typeof fr = {
   "map.countries": "countries with FAs",
   "map.title": "Field Actions by country",
   "misc.loading": "Loading…",
-  "misc.empty.title": "Welcome to FACM",
+  "misc.empty.title": "Welcome to FieldPulse",
   "misc.empty.body": "Load your Customer Lists (upload or scan a Teams folder) and the dashboard fills itself. Source files are never modified.",
   "misc.empty.cta": "Load files",
   "misc.error": "Something went wrong",

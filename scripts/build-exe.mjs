@@ -1,17 +1,20 @@
 /**
- * Builds the portable Windows executable:
+ * Builds the lightweight portable Windows executable (Node SEA — no Electron):
  *
- *   dist-portable/FACM/
- *     FACM.exe          <- Node SEA launcher (embeds the Node runtime itself)
+ *   dist-portable/FieldPulse/
+ *     FieldPulse.exe    <- Node SEA launcher (embeds the Node runtime itself)
  *     LISEZMOI.txt
  *     resources/
  *       server/         <- compiled Fastify server + analysis worker
  *       web/            <- built frontend
  *       node_modules/   <- production dependencies only (+ @facm/core)
  *
- * Double-clicking FACM.exe starts the local server and opens the browser.
+ * Double-clicking FieldPulse.exe starts the local server and opens the browser.
  * End users need NOTHING installed (no Node, no npm). Data (cache SQLite,
- * exports) is stored in %LOCALAPPDATA%\FACM\data.
+ * exports) is stored in %LOCALAPPDATA%\FieldPulse\data.
+ *
+ * NOTE: `npm run build:desktop` also ships a portable (native Electron window).
+ * This SEA build is the lighter browser-based alternative (~88 MB vs ~118 MB).
  */
 import { execSync } from "node:child_process";
 import fs from "node:fs";
@@ -20,7 +23,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = path.join(ROOT, "dist-portable");
-const APP = path.join(OUT, "FACM");
+const APP = path.join(OUT, "FieldPulse");
 const RES = path.join(APP, "resources");
 const BUILD = path.join(OUT, "build");
 
@@ -61,14 +64,14 @@ fs.copyFileSync(path.join(ROOT, "packages/core/package.json"), path.join(coreDes
 
 console.log("[4/6] SEA launcher…");
 const launcher = `"use strict";
-// FACM portable launcher — embedded in the exe via Node SEA.
+// FieldPulse portable launcher — embedded in the exe via Node SEA.
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const exeDir = path.dirname(process.execPath);
 const resources = path.join(exeDir, "resources");
 process.env.FACM_WEB_DIST = process.env.FACM_WEB_DIST || path.join(resources, "web");
 process.env.FACM_DATA_DIR =
-  process.env.FACM_DATA_DIR || path.join(process.env.LOCALAPPDATA || exeDir, "FACM", "data");
+  process.env.FACM_DATA_DIR || path.join(process.env.LOCALAPPDATA || exeDir, "FieldPulse", "data");
 process.env.FACM_OPEN_BROWSER = process.env.FACM_OPEN_BROWSER || "1";
 console.log("FieldPulse — Field Action Monitoring");
 console.log("Fermez cette fenetre pour arreter l'application.");
@@ -76,12 +79,12 @@ import(pathToFileURL(path.join(resources, "server", "dist", "main.js")).href)
   .then((mod) => mod.startServer())
   .catch((e) => {
     if (e && e.code === "EADDRINUSE") {
-      console.log("[FACM] deja lance - ouverture du navigateur.");
+      console.log("[FieldPulse] deja lance - ouverture du navigateur.");
       require("node:child_process").spawn("cmd", ["/c", "start", "", "http://127.0.0.1:4560"], { detached: true, stdio: "ignore" });
       setTimeout(() => process.exit(0), 500);
       return;
     }
-    console.error("[FACM] demarrage impossible:", e);
+    console.error("[FieldPulse] demarrage impossible:", e);
     console.log("Appuyez sur Ctrl+C pour fermer.");
   });
 `;
@@ -93,7 +96,7 @@ fs.writeFileSync(
 run(`"${process.execPath}" --experimental-sea-config sea-config.json`, BUILD);
 
 console.log("[5/6] Injection dans l'exécutable…");
-const exePath = path.join(APP, "FACM.exe");
+const exePath = path.join(APP, "FieldPulse.exe");
 fs.copyFileSync(process.execPath, exePath);
 run(
   `npx postject "${exePath}" NODE_SEA_BLOB "${path.join(BUILD, "sea.blob")}" --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2`,
@@ -104,14 +107,14 @@ console.log("[6/6] Notice…");
 fs.writeFileSync(
   path.join(APP, "LISEZMOI.txt"),
   [
-    "FACM - Field Action Closure Monitoring (version portable)",
+    "FieldPulse - Field Action Monitoring (version portable)",
     "",
-    "1. Copiez le dossier FACM ou vous voulez (cle USB, Bureau, etc.).",
-    "2. Double-cliquez FACM.exe : le navigateur s'ouvre sur http://127.0.0.1:4560",
+    "1. Copiez le dossier FieldPulse ou vous voulez (cle USB, Bureau, etc.).",
+    "2. Double-cliquez FieldPulse.exe : le navigateur s'ouvre sur http://127.0.0.1:4560",
     "3. Fermez la fenetre noire pour arreter l'application.",
     "",
     "Aucune installation requise. Aucune connexion internet requise.",
-    "Vos donnees (cache, exports, commentaires) sont dans %LOCALAPPDATA%\\FACM\\data",
+    "Vos donnees (cache, exports, commentaires) sont dans %LOCALAPPDATA%\\FieldPulse\\data",
     "Les fichiers Excel sources ne sont JAMAIS modifies.",
     "",
     "Premier lancement : Windows SmartScreen peut afficher un avertissement",
@@ -122,4 +125,4 @@ fs.writeFileSync(
 fs.rmSync(BUILD, { recursive: true, force: true });
 const size = Math.round(fs.statSync(exePath).size / 1024 / 1024);
 console.log(`\n✔ Terminé : ${APP}`);
-console.log(`  FACM.exe (${size} Mo) + resources/`);
+console.log(`  FieldPulse.exe (${size} Mo) + resources/`);
